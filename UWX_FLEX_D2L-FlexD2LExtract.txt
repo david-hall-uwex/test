@@ -1,0 +1,763 @@
+/*
+UW Extension 
+DATE:      August 2014
+DEVELOPER: David Hall
+
+@version 2.1  22 Aug 2016
+@author David Hall
+
+Class for UW Extension D2L Extract process.
+*/
+
+/* 
+Version History
+1.0     15 Aug 2014  D Hall     Initial Version
+1.1     01 Oct 2014  D Hall     Release version (not sure?)
+1.1.1   31 Mar 2015  D Hall     Fixed reference to UWX_CORE:Base property (changed Version to csVersion)
+2.0		29 Jun 2016  S Samula/  Added code to handle Flex D2L Exceptions/
+                     D Hall     Flex D2L Course Version Seup/Flex D2L Course Version Exception
+                                Also added code for handling logging for Process and Run Control
+2.1     22 Aug 2016  D Hall     Mods for DE588 - Changes to Exception Handling
+                                Move values needed for Enrollment Exceptions page to new Setup record (independent of Run Control)
+                                Add methods for getting values from new Setup record 
+                                Revise code to reflect changed records for moved fields
+                                Add method to inactivate exceptions once past end date	
+*/
+
+import UWX_CORE:Utilities:People:*;
+import UWX_CORE:Utilities:AcadCal:*;
+import UWX_FLEX_CORE:*;
+import UWX_FLEX_CORE:Utilities:Catalog:*;
+
+class FlexD2LExtract extends UWX_FLEX_CORE:Extract; /* will be UWX_FLEX_CORE:Extract/UWX_CORE:Extract/UWX_CORE:Process */
+   
+   method FlexD2LExtract(&piProcessInstance As integer);
+   method Main();
+   method ExtractEnrollments();
+   method ExtractExpirations();
+   method ExtractUsers();
+   method GetUsername(&psEmplid As string) Returns string;
+   /* mod for DE588 - Changes to Exception Handling */
+   /* Add method for Inactivating Enrollment Exceptions based on Extract Date */
+   method InactivateEnrollmentExceptions();
+   /* end mod for DE588 */
+   method ParseCreateLine(&psUsername As string, &psEmplid As string, &psFirstName As string, &psLastName As string, &psIsActive As string, &psCampusEmail As string) Returns string;
+   method ParseEnrollLine(&psUsername As string, &psEmplid As string, &psCourseCode As string, &psStudentRole As string) Returns string;
+   method ParseUnenrollLine(&psUsername As string, &psEmplid As string, &psCourseCode As string) Returns string;
+   method ParseEnrollmentOutput(&psEmplid As string, &psUsername As string, &psStrm As string, &psClassNbr As string, &psStdntEnrlStatus As string, &psEnrlStatusReason As string, &psSubject As string, &psCatalogNbr As string) Returns string;
+   method GetD2LCourseVersion(&psEmplid As string, &psSubject As string, &psCatalogNbr As string, &psStrm As string) Returns string;
+   method ReadRunControl();
+   method SetExtractDate();
+   method WriteHeader();
+   method WriteHeaderLine(&psHeaderText As string);
+   method WriteLogHeader();
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Add methods to get and log data from setup table */
+   /* methods that eventually will get moved up into UWX_CORE:Base */
+   method getSetup(&psSetupRecordName As string); /* this will get moved up to UWX_CORE:Base */
+   method logSetup(); /* will also go in UWC_CORE:Base , can be supplemented by children */
+   /* End Mod for DE588 */
+   /* methods that eventually will get moved up into UWX_CORE:Process */
+   method getProcessParms(&piProcessInstance As integer);
+   method logProcessParms(); /* will also go in UWC_CORE:Process, can be supplemented by children */
+   method getRunControl(&psRunControlRecordName As string); /* this will get moved up to UWX_CORE:Process */
+   method logRunControl(); /* will also go in UWC_CORE:Process, can be supplemented by children */
+   
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Add methods to get and log data from setup table */
+   /* these properties should come from UWX_CORE:Base */
+   property Record crecSetup;
+   /* End Mod for DE588 */
+   
+   /* these properties should come from UWX_CORE:Process */
+   property string csDatabaseName;
+   property string csProcessName;
+   property integer ciProcessInstance;
+   property string csOperatorID;
+   property string csRunControlID;
+   property Record crecRunControl;
+   /* Class-specific properties follow */
+   property date ExtractDate;
+   
+   
+end-class;
+
+method FlexD2LExtract
+   /+ &piProcessInstance as Integer +/
+   
+   Local string &sDBName;
+   
+   %Super = create UWX_FLEX_CORE:Extract();
+   %This.csVersion = "UWX_FLEX_D2L:FlexD2LExtract v2.1 20 Aug 2016 David Hall";
+   
+   /* This should get moved up into UWX_CORE:Process or even UWX_CORE:Base */
+   /* get DBName from DB */
+   SQLExec("select upper(sys_context('userenv','db_name')) from dual", &sDBName);
+   %This.csDatabaseName = &sDBName;
+   
+   %This.WriteLogHeader();
+   
+   
+   /* >>> This call will get moved up into constructor for UWX_CORE:Process 
+   Will pass Process Instance up in PCode chain <<< */
+   /* Get Processing parameters (including OprID and Run Control ID) */
+   %This.getProcessParms(&piProcessInstance);
+   /* and log them */
+   %This.logProcessParms();
+   
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Add methods to get and log data from setup table */
+   /* Get Run Control data for this process */
+   %This.getSetup("UWX_FDX_SETUP");
+   /* and log them */
+   %This.logSetup();
+   /* End Mod for DE588 */
+   
+   /* Get Run Control data for this process */
+   %This.getRunControl("UWX_FDX_RUNCTL");
+   /* and log them */
+   %This.logRunControl();
+end-method;
+
+method Main
+   /+ Extends/implements UWX_FLEX_CORE:Extract.Main +/
+   /* get runcontrol values */
+   rem MessageBox(%MsgStyle_OK, "", 0, 0, "In D2LExtract.Main");
+   
+   
+   %This.SetExtractDate();
+   
+   /* set delimiter for a CSV */
+   %This.FieldDelimiter = ",";
+   
+   %This.CreateOutputFile("N", %This.crecRunControl.FILE_PATH.Value, "FLEX_D2LEXT", "csv");
+   
+   %This.WriteHeader();
+   
+   If %This.crecRunControl.UWX_FDX_USER_OPT.Value = "Y" Then
+      %This.ExtractUsers();
+   End-If;
+   
+   If %This.crecRunControl.UWX_FDX_ENRL_OPT.Value = "Y" Then
+      %This.ExtractEnrollments();
+   End-If;
+   
+   If %This.crecRunControl.UWX_FDX_EXPIR_OPT.Value = "Y" Then
+      %This.ExtractExpirations();
+   End-If;
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Add method for inactivating Enrollment Exceptions past their end date */
+   %This.InactivateEnrollmentExceptions();
+   /* End Mod for DE588 */
+   
+   %This.CloseOutputFile();
+   
+end-method;
+
+method ExtractEnrollments
+   
+   Local object &loCurrStudent;
+   Local object &loNextTerm;
+   Local object &loFlexCourse;
+   Local integer &liEnrollLeadDays;
+   Local date &ldEnrollStartDate;
+   Local SQL &lSQLEnrollmentQuery;
+   Local string &lsCurrEmplid;
+   Local string &lsLastEmplid;
+   Local string &lsCurrUsername;
+   Local string &lsCurrStrm;
+   Local string &lsLastStrm;
+   Local string &lsCurrClassNbr;
+   Local string &lsCurrStdntEnrlStatus;
+   Local string &lsCurrEnrlStatusReason;
+   Local string &lsCurrSubject;
+   Local string &lsCurrCatalogNbr;
+   Local integer &liCurrCatNbrXLoc;
+   Local string &lsCurrParsedCatalogNbr;
+   Local string &lsCurrEnrollAction;
+   Local string &lsCurrCourseCode;
+   Local string &lsCurrCourseRole;
+   Local string &lsCurrOutputLine;
+   Local integer &liTermEnrollmentCount;
+   Local integer &liTotalEnrollmentCount;
+   
+   
+   %This.WriteHeaderLine("<--- Enrollment records follow ---> ");
+   
+   /* Figure out lead time for sending enrollments using Run Control parm */
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Move Institution, Acad Career, Enroll Lead time to Setup record */
+   &ldEnrollStartDate = AddToDate(%This.ExtractDate, 0, 0, %This.crecSetup.UWX_FDX_ENRL_LEAD.Value);
+   
+   /*
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Institution is " | %This.crecSetup.INSTITUTION.Value);
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Acad Career is " | %This.crecSetup.ACAD_CAREER.Value);
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Enroll Start Date is " | &ldEnrollStartDate);
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Extract Date is " | %This.ExtractDate);
+   */
+   
+   /* select current enrollments based on the effective date of this extract run */
+   &lSQLEnrollmentQuery = GetSQL(SQL.UWX_FDX_CURR_ENRL, %This.crecSetup.INSTITUTION.Value, %This.crecSetup.ACAD_CAREER.Value, &ldEnrollStartDate, %This.ExtractDate);
+   /* End Mod for DE588 */
+   
+   If &lSQLEnrollmentQuery.Status = 0 Then
+      While &lSQLEnrollmentQuery.Fetch(&lsCurrEmplid, &lsCurrStrm, &lsCurrClassNbr, &lsCurrStdntEnrlStatus, &lsCurrEnrlStatusReason, &lsCurrSubject, &lsCurrCatalogNbr);
+         
+         rem MessageBox(%MsgStyle_OK, "", 0, 0, "After Enrollment query, CurrCatalogNbr is *" | &lsCurrCatalogNbr | "*");
+         /* track changes in terms (query is sorted by term, Emplid, Class Nbr) */
+         If &lsCurrStrm <> &lsLastStrm Then
+            If &lsLastStrm <> "" Then /* if actually had a last term */
+               /* write header note with total term enrollments */
+               %This.WriteHeaderLine("<--- Total of " | &liTermEnrollmentCount | " Enrollments for Term " | &lsLastStrm | " ---> ");
+            End-If;
+            /* write header record */
+            %This.WriteHeaderLine("<--- Enrollments for Term " | &lsCurrStrm | " ---> ");
+            
+            /* reset term enrollment count */
+            &liTermEnrollmentCount = 0; /* start at 0 because we will be adding below */
+            &lsLastStrm = &lsCurrStrm;
+         End-If;
+         
+         /* track changes in students (since query is sorted by Emplid after Term) */
+         If &lsCurrEmplid <> &lsLastEmplid Then
+            
+            &lsCurrUsername = %This.GetUsername(&lsCurrEmplid); /* get username for new student */
+            If &lsCurrUsername = "NOT FOUND" Then
+               /* This is an abend condition */
+               /* we don't want to send incorrect data to D2L if we can avoid it */
+               Error ("Process Abended because of missing Username for EmplID: " | &lsCurrEmplid);
+            Else
+               
+               &lsLastEmplid = &lsCurrEmplid; /* reset Last value to current value */
+            End-If;
+         End-If;
+         
+         /* increment counters */
+         &liTermEnrollmentCount = &liTermEnrollmentCount + 1;
+         &liTotalEnrollmentCount = &liTotalEnrollmentCount + 1;
+         
+         /*    
+         MessageBox(%MsgStyle_OK, "", 0, 0, "In ExtractEnrollments Main Loop");
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Emplid is " | &lsCurrEmplid);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Term is " | &lsCurrStrm);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Class Number is " | &lsCurrClassNbr);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Enrl Status is " | &lsCurrStdntEnrlStatus);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Enrl Status Reason is " | &lsCurrEnrlStatusReason);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Enrl Status is " | &lsCurrStdntEnrlStatus);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Subject is " | &lsCurrSubject);
+         MessageBox(%MsgStyle_OK, "", 0, 0, "Catalog Number is " | &lsCurrCatalogNbr);
+       */
+         /*put together the line of output data for this enrollment */
+         &lsCurrOutputLine = %This.ParseEnrollmentOutput(&lsCurrEmplid, &lsCurrUsername, &lsCurrStrm, &lsCurrClassNbr, &lsCurrStdntEnrlStatus, &lsCurrEnrlStatusReason, &lsCurrSubject, &lsCurrCatalogNbr);
+         
+         /* and write it to file */
+         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         
+      End-While;
+      
+      /* write final headers for enrollments */
+      If &liTermEnrollmentCount > 0 Then /* write header note with total term enrollments */
+         %This.WriteHeaderLine("<--- Total of " | &liTermEnrollmentCount | " Enrollments for Term " | &lsLastStrm | " ---> ");
+      End-If;
+      /* write header note with total term enrollments */
+      %This.WriteHeaderLine("<--- Total of " | &liTotalEnrollmentCount | " Enrollment records processed --->");
+   Else
+      /* throw error about query result */
+      MessageBox(%MsgStyle_OK, "", 0, 0, "Error in SQL get, result is:" | &lSQLEnrollmentQuery.Status);
+      
+   End-If;
+   
+end-method;
+
+method ExtractExpirations
+   
+   Local date &ldExpirationEndDate;
+   Local SQL &lSQLExpiredRoleQuery;
+   Local string &lsCurrCourseRole;
+   Local string &lsCurrEmplid;
+   Local string &lsLastEmplid;
+   Local string &lsCurrUsername;
+   Local string &lsCurrStrm;
+   Local string &lsCurrClassNbr;
+   Local string &lsCurrSubject;
+   Local string &lsCurrCatalogNbr;
+   Local string &lsCurrOutputLine;
+   Local integer &liTotalExpirationCount;
+   
+   
+   
+   %This.WriteHeaderLine("<--- End of Term Expiration records follow ---> ");
+   
+   
+   /* set the Course Role based on the Run Control value for Expired Enrollments */
+   &lsCurrCourseRole = %This.crecRunControl.UWX_FDX_EXP_ROLE.Value;
+   
+   /* commenting as Expiration Tail Days is  already included in LogRunControl method */
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Move Institution, Acad Career, Expire Tail to Setup record */
+   Rem MessageBox(%MsgStyle_OK, "", 0, 0, "Expiration Tail Days is " | %This.crecSetup.UWX_FDX_EXPIR_TAIL.Value);
+   
+   &ldExpirationEndDate = AddToDate(%This.ExtractDate, 0, 0, ( - 1 * %This.crecSetup.UWX_FDX_EXPIR_TAIL.Value));
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Expiration End Date is " | &ldExpirationEndDate);
+   
+   /* select current enrollments based on the effective date of this extract run */
+   &lSQLExpiredRoleQuery = GetSQL(SQL.UWX_FDX_CURR_EXPIR, %This.crecSetup.INSTITUTION.Value, %This.crecSetup.ACAD_CAREER.Value, %This.ExtractDate, &ldExpirationEndDate);
+   /* End Mod for DE588 */
+   
+   If &lSQLExpiredRoleQuery.Status = 0 Then
+      While &lSQLExpiredRoleQuery.Fetch(&lsCurrEmplid, &lsCurrStrm, &lsCurrClassNbr, &lsCurrSubject, &lsCurrCatalogNbr);
+         
+         /* track changes in students (since query is sorted by Emplid after Term) */
+         If &lsCurrEmplid <> &lsLastEmplid Then
+            
+            &lsCurrUsername = %This.GetUsername(&lsCurrEmplid); /* get username for new student */
+            &lsLastEmplid = &lsCurrEmplid; /* reset Last value to current value */
+         End-If;
+         
+         /* increment counter */
+         &liTotalExpirationCount = &liTotalExpirationCount + 1;
+         
+         /*put together the line of output data for this enrollment */
+         /* CurrStdntEnrlStatus is hardcoded as EXP, this will tell ParseEnrollmentOutput to treat this as an Expired record */
+         &lsCurrOutputLine = %This.ParseEnrollmentOutput(&lsCurrEmplid, &lsCurrUsername, &lsCurrStrm, &lsCurrClassNbr, "EXP", "", &lsCurrSubject, &lsCurrCatalogNbr);
+         
+         /* and write it to file */
+         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         
+      End-While;
+      
+      /* write final headers for expirations */
+      
+      /* write header note with total term enrollments */
+      %This.WriteHeaderLine("<--- Total of " | &liTotalExpirationCount | " Expiration records processed --->");
+      
+   Else
+      /* throw error about query result */
+      MessageBox(%MsgStyle_OK, "", 0, 0, "Error in SQL get, result is:" | &lSQLExpiredRoleQuery.Status);
+      
+   End-If;
+   
+end-method; /* ExtractExpirations */
+
+method ExtractUsers
+   Local object &loCurrStudent;
+   Local SQL &lSQLUserQuery;
+   Local string &lsCurrEmplid;
+   Local string &lsCurrCampusEmail;
+   Local string &lsCurrUsername;
+   Local string &lsCurrOutputLine;
+   Local integer &liTotalUserCount;
+   
+   
+   %This.WriteHeaderLine("<--- User records follow ---> ");
+   
+   /* Select all current users, which is anyone who is eligible to enroll in a current term or any future term */
+   /* Begin Mod for DE588 - Changes to Exception Handling */
+   /* Move Institution, Acad Career, to Setup record */
+   &lSQLUserQuery = GetSQL(SQL.UWX_FDX_CURR_USER, %This.crecSetup.INSTITUTION.Value, %This.crecSetup.ACAD_CAREER.Value, %This.ExtractDate);
+   /* End Mod for DE588 */
+   
+   If &lSQLUserQuery.Status = 0 Then
+      While &lSQLUserQuery.Fetch(&lsCurrEmplid);
+         
+         
+         &loCurrStudent = create UWX_CORE:Utilities:People:Student(&lsCurrEmplid);
+         
+         &loCurrStudent.PersonEffDate = %This.ExtractDate;
+         &loCurrStudent.GetStudentInfo();
+         
+         &lsCurrOutputLine = "CREATE" | %This.FieldDelimiter | &loCurrStudent.Username | %This.FieldDelimiter | &loCurrStudent.Emplid | %This.FieldDelimiter | &loCurrStudent.FirstName | %This.FieldDelimiter | &loCurrStudent.LastName | %This.FieldDelimiter | %This.FieldDelimiter | "True" | %This.FieldDelimiter | &loCurrStudent.CampusEmail | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_ORGRL_STUD.Value;
+         
+         /* and write it to file */
+         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         
+         /* while we're at it, let's make sure they're enrolled in Flex Basics course */
+         &lsCurrOutputLine = "ENROLL" | %This.FieldDelimiter | &loCurrStudent.Username | %This.FieldDelimiter | &loCurrStudent.Emplid | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_COURSE_CD.Value | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_ACT_ROLE.Value;
+         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         
+         /* increment counter */
+         &liTotalUserCount = &liTotalUserCount + 1;
+         
+      End-While;
+      
+      /* write header note with total term enrollments */
+      %This.WriteHeaderLine("<--- Total of " | &liTotalUserCount | " User records processed --->");
+   Else
+      /* throw error about query result */
+      MessageBox(%MsgStyle_OK, "", 0, 0, "Error in SQL get, result is:" | &lSQLUserQuery.Status);
+   End-If;
+end-method; /* ExtractUsers */
+
+method GetUsername
+   /+ &psEmplid as String +/
+   /+ Returns String +/
+   
+   Local object &loCurrStudent;
+   Local string &lsUsername;
+   
+   &loCurrStudent = create UWX_CORE:Utilities:People:Student(&psEmplid);
+   
+   &loCurrStudent.GetStudentInfo(); /* this gets email and username */
+   
+   &lsUsername = &loCurrStudent.Username;
+   
+   Return &loCurrStudent.Username;
+   
+end-method; /* GetUsername */
+
+/* mod for DE588 */
+/* Add method for Inactivating Enrollment Exceptions based on Extract Date */
+method InactivateEnrollmentExceptions
+   
+   Local SQL &lSQLInactiveEnrollments;
+   
+   &lSQLInactiveEnrollments = GetSQL(SQL.UWX_FDX_INACT_EXCEPT);
+   
+   &lSQLInactiveEnrollments.Execute(%This.ExtractDate);
+   
+   &lSQLInactiveEnrollments.Close();
+   
+end-method;
+
+/* end mod for DE588 */
+
+method ParseCreateLine
+   /+ &psUsername as String, +/
+   /+ &psEmplid as String, +/
+   /+ &psFirstName as String, +/
+   /+ &psLastName as String, +/
+   /+ &psIsActive as String, +/
+   /+ &psCampusEmail as String +/
+   /+ Returns String +/
+   Local string &lsCreateLine;
+   
+   &lsCreateLine = "CREATE" | %This.FieldDelimiter | &psUsername | %This.FieldDelimiter | &psEmplid | %This.FieldDelimiter | &psFirstName | %This.FieldDelimiter | &psLastName | %This.FieldDelimiter | %This.FieldDelimiter | &psIsActive | %This.FieldDelimiter | &psCampusEmail | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_ORGRL_STUD.Value;
+   
+   Return &lsCreateLine;
+   
+   
+end-method; /* ParseCreateLine */
+
+method ParseEnrollLine
+   /+ &psUsername as String, +/
+   /+ &psEmplid as String, +/
+   /+ &psCourseCode as String, +/
+   /+ &psStudentRole as String +/
+   /+ Returns String +/
+   
+   Local string &lsEnrollLine;
+   
+   &lsEnrollLine = "ENROLL" | %This.FieldDelimiter | &psUsername | %This.FieldDelimiter | &psEmplid | %This.FieldDelimiter | &psCourseCode | %This.FieldDelimiter | &psStudentRole;
+   
+   Return &lsEnrollLine;
+   
+end-method; /* ParseCreateLine */
+
+method ParseUnenrollLine
+   /+ &psUsername as String, +/
+   /+ &psEmplid as String, +/
+   /+ &psCourseCode as String +/
+   /+ Returns String +/
+   
+   /* While not used at present, we still have this method to provide symmetry and future flexibility */
+   
+   Local string &lsUnenrollLine;
+   
+   /* Put it all together, no role needed for unenrollment */
+   &lsUnenrollLine = "UNENROLL" | %This.FieldDelimiter | &psUsername | %This.FieldDelimiter | &psEmplid | %This.FieldDelimiter | &psCourseCode;
+   
+   Return &lsUnenrollLine;
+   
+end-method;
+
+
+method ParseEnrollmentOutput
+   /+ &psEmplid as String, +/
+   /+ &psUsername as String, +/
+   /+ &psStrm as String, +/
+   /+ &psClassNbr as String, +/
+   /+ &psStdntEnrlStatus as String, +/
+   /+ &psEnrlStatusReason as String, +/
+   /+ &psSubject as String, +/
+   /+ &psCatalogNbr as String +/
+   /+ Returns String +/
+   
+   /* Routine to determine what action is needed based on the enrollment data and then go put together the data */
+   
+   /* note CurrStrm is not used currently but we expect this to change; CurrClassNbr is for debugging use */
+   
+   Local object &loFlexCourse;
+   Local object &loD2LCourseExceptionVer;
+   Local string &lsLastEmplid;
+   Local string &lsParsedCatalogNbr;
+   Local string &lsCourseCode;
+   Local string &lsOutputLine;
+   Local string &Course_Title;
+   Local string &Course_Title1;
+   
+   /* parse X's off of the Catalog Nbr */
+   /* create Flex Course object for use in parsing Course Number */
+   &loFlexCourse = create UWX_FLEX_CORE:Utilities:Catalog:FlexCourse("", "", "", "");
+   /* set the Flex Course Number on the Course Object */
+   &loFlexCourse.CourseNumber = &psCatalogNbr;
+   rem MessageBox(%MsgStyle_OK, "", 0, 0, "Original Catalog Nbr is *" | &psCatalogNbr | "*");
+   /* call method to parse Flex course number */
+   &lsParsedCatalogNbr = &loFlexCourse.ParseFlexCourseNumber();
+   rem MessageBox(%MsgStyle_OK, "", 0, 0, "Parsed Catalog Nbr is *" | &lsParsedCatalogNbr | "*");
+   <*Start Srini Samula 14 Jun 2016 , added code to fetch D2L Course version from course/student exception setup table *>
+   &lsCourseCode = %This.GetD2LCourseVersion(&psEmplid, &psSubject, &psCatalogNbr, &psStrm);
+   <*End Srini Samula 14 Jun 2016 , added code to fetch D2L Course version from course/student exception setup table *>
+   
+   /* Put together Enrollment record */
+   If &psStdntEnrlStatus = "E" And
+         &psEnrlStatusReason = "ENRL" Then
+      
+      /* In this case, the student is actively enrolled in a course, so we send an Enroll Record using the Student Active Role */
+      /* Put it all together */
+      &lsOutputLine = %This.ParseEnrollLine(&psUsername, &psEmplid, &lsCourseCode, %This.crecRunControl.UWX_FDX_ACT_ROLE.Value);
+      
+   Else
+      If &psStdntEnrlStatus = "E" Or /* if Enrolled but some other Enrollment Status Reason (Withdrawn, Dropped, Cancelled) */
+            &psStdntEnrlStatus = "D" Or /* if Dropped */
+            &psStdntEnrlStatus = "EXP" Then /* if Expired */
+         
+         /* For all these cases, we will expire the student's enrollment; this means sending an Enroll record with the Student Expired Role */
+         
+         /* Put it all together */
+         &lsOutputLine = %This.ParseEnrollLine(&psUsername, &psEmplid, &lsCourseCode, %This.crecRunControl.UWX_FDX_EXP_ROLE.Value);
+         
+      Else /* if any other Entrollment Status  */
+         &lsOutputLine = "ERROR Invalid Enrollment Status (" | &psStdntEnrlStatus | ")  for Emplid " | &psEmplid | "; Term is " | &psStrm | " and Class Nbr is " | &psClassNbr;
+         /* throw an error here */
+         MessageBox(%MsgStyle_OK, "", 0, 0, "ERROR Invalid Enrollment Status (" | &psStdntEnrlStatus | ")  for Emplid " | &psEmplid | "; Term is " | &psStrm | " and Class Nbr is " | &psClassNbr);
+      End-If;
+   End-If;
+   
+   /* send the result back to the calling procedure */
+   Return &lsOutputLine;
+   
+end-method; /* ParseEnrollmentOutput */
+
+
+method ReadRunControl
+   Local boolean &lbRCFound;
+   
+   %This.crecRunControl = CreateRecord(Record.UWX_FDX_RUNCTL);
+   %This.crecRunControl.OPRID.Value = UWX_FDX_AET.OPRID;
+   %This.crecRunControl.RUN_CNTL_ID.Value = UWX_FDX_AET.RUN_CNTL_ID;
+   &lbRCFound = %This.crecRunControl.SelectByKey();
+   If &lbRCFound = False Then
+      MessageBox(%MsgStyle_OK, "", 0, 0, "Run Control not Found");
+      Exit;
+   End-If;
+   
+end-method;
+
+method SetExtractDate
+   
+   /* if we have a value, atore the extract date because we use it a lot */
+   If %This.crecRunControl.UWX_FDX_EXTRACT_DT.Value Then
+      %This.ExtractDate = %This.crecRunControl.UWX_FDX_EXTRACT_DT.Value;
+   Else
+      %This.ExtractDate = %Date;
+   End-If;
+   
+   rem MessageBox(%MsgStyle_OK, "", 0, 0, "Extract Date is " | %This.ExtractDate);
+   
+end-method;
+
+method WriteHeader
+   
+   /* now that we have an output file, write header info to it */
+   %This.WriteHeaderLine("<--- UW Extension Flex D2L Extract ---> ");
+   %This.WriteHeaderLine("<--- Version " | %This.csVersion | " ---> ");
+   %This.WriteHeaderLine("<--- Run on " | %This.csDatabaseName | " ---> ");
+   %This.WriteHeaderLine("<--- Extract Date: " | %This.ExtractDate | " ---> ");
+   
+end-method;
+
+
+method WriteHeaderLine
+   /+ &psHeaderText as String +/
+   
+   /* only write header rec if turned on in RunControl... */
+   If %This.crecRunControl.UWX_HEADER_OPT.Value = "Y" Then
+      %This.OutputFile.WriteLine(&psHeaderText);
+   End-If;
+   
+end-method;
+
+method WriteLogHeader
+   
+   /* write header info to log */
+   MessageBox(%MsgStyle_OK, "", 0, 0, "*****************************");
+   MessageBox(%MsgStyle_OK, "", 0, 0, "UW Extension Flex D2L Extract");
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Version " | %This.csVersion);
+   MessageBox(%MsgStyle_OK, "", 0, 0, "Run on " | %This.csDatabaseName);
+   Rem MessageBox(%MsgStyle_OK, "", 0, 0, "*****************************");
+   
+end-method;
+
+method GetD2LCourseVersion
+   /+ &psEmplid as String, +/
+   /+ &psSubject as String, +/
+   /+ &psCatalogNbr as String, +/
+   /+ &psStrm as String +/
+   /+ Returns String +/
+   
+   Local string &Course_Title;
+   /*Fetch D2L Course version for this Student/Subject/Catalog/Strm combination */
+   rem MessageBox(%MsgStyle_OK, "", 0, 0, "In D2LExtract.ExtractUsers");
+   SQLExec("SELECT COURSE_TITLE FROM PS_UWX_FDX_CRS_V_E WHERE EMPLID = :1 AND SUBJECT = :2 AND LTRIM(RTRIM(CATALOG_NBR)) = :3 AND FROM_TERM <= :4 AND TO_TERM >= :4", &psEmplid, &psSubject, &psCatalogNbr, &psStrm, &Course_Title);
+   If None(&Course_Title) Then
+      SQLExec("SELECT COURSE_TITLE FROM PS_UWX_FDX_CRSE_VE WHERE  SUBJECT = :1 AND LTRIM(RTRIM(CATALOG_NBR)) = :2 AND FROM_TERM <= :3 AND NVL(trim(TO_TERM),'9999') >= :3", &psSubject, &psCatalogNbr, &psStrm, &Course_Title);
+   End-If;
+   If None(&Course_Title) Then
+      Error ("Process Abended because of missing D2L Course Version for the Student: " | &psEmplid | " Subject:" | &psSubject | " Catalog:" | &psCatalogNbr | " Term:" | &psStrm);
+      rem MessageBox(%MsgStyle_OK, "", 0, 0, "Process Abended because of missing D2L Course Version for the Student:" | &psEmplid | " Subject:" | &psSubject | " Catalog:" | &psCatalogNbr | " Term:" | &psStrm);
+      rem Exit (1);
+   End-If;
+   Return &Course_Title;
+   
+end-method;
+
+/* Begin Mod for DE588 - Changes to Exception Handling */
+/* Add methods to get and log data from setup table */
+
+/* These will need to get moved up to UWX_CORE:Base eventually */
+
+method getSetup
+   /+ &psSetupRecordName as String +/
+   /* method gets data from Setup  table given in parms
+and assigns it to the crecSetup record property */
+   
+   Local Record &lrecSetup;
+   Local string &lsRecName;
+   Local boolean &lbSelectSuccess;
+   
+   rem  MessageBox(0, "", 0, 0, "In getSetup, SetupRecName is *" | &psSetupRecordName | "*");
+   &lsRecName = "RECORD." | Upper(&psSetupRecordName);
+   rem  MessageBox(0, "", 0, 0, "lsRecName is *" | &lsRecName | "*");
+   &lrecSetup = CreateRecord(@(&lsRecName));
+   
+   /* no keys needed to select setup record */
+   
+   &lbSelectSuccess = &lrecSetup.SelectByKey();
+   
+   If &lbSelectSuccess Then /* if we got it */
+      /* assign resulting record object to crecRunControl property for this object */
+      %This.crecSetup = &lrecSetup;
+      
+   Else /* this is a fatal error */
+      MessageBox(0, "", 0, 0, "FATAL ERROR: Unable to select Setup values");
+      MessageBox(0, "", 0, 0, ">>> PROCESS STOPPED <<<");
+      Exit;
+   End-If;
+   
+end-method;
+
+method logSetup
+   
+   MessageBox(0, "", 0, 0, "******* SETUP VALUES *******");
+   MessageBox(0, "", 0, 0, "Institution                 = " | %This.crecSetup.INSTITUTION.Value);
+   MessageBox(0, "", 0, 0, "Academic Career             = " | %This.crecSetup.ACAD_CAREER.Value);
+   MessageBox(0, "", 0, 0, "Enrollment Lead Time (Days) = " | %This.crecSetup.UWX_FDX_ENRL_LEAD.Value);
+   MessageBox(0, "", 0, 0, "Expiration Tail Time (Days) = " | %This.crecSetup.UWX_FDX_EXPIR_TAIL.Value);
+   MessageBox(0, "", 0, 0, "**********************************");
+end-method;
+
+/* End Mod for DE588 - */
+
+
+/* these need to get moved up to UWX_CORE:Process */
+
+method getProcessParms
+   /+ &piProcessInstance as Integer +/
+   
+   Local boolean &lbSelectSuccess;
+   Local Record &lrecPSPrcsRqst;
+   
+   &lrecPSPrcsRqst = CreateRecord(Record.PSPRCSRQST);
+   &lrecPSPrcsRqst.PRCSINSTANCE.Value = &piProcessInstance;
+   
+   &lbSelectSuccess = &lrecPSPrcsRqst.SelectByKey();
+   
+   If &lbSelectSuccess Then
+      
+      %This.ciProcessInstance = &piProcessInstance;
+      %This.csOperatorID = &lrecPSPrcsRqst.OPRID.Value;
+      %This.csRunControlID = &lrecPSPrcsRqst.RUNCNTLID.Value;
+      
+   Else
+      /* This is a fatal error */
+      MessageBox(0, "", 0, 0, "FATAL ERROR: Unable to select AE Run Control Parms ");
+      MessageBox(0, "", 0, 0, "Process Instance = " | &piProcessInstance);
+      MessageBox(0, "", 0, 0, ">>> PROCESS STOPPED <<<");
+      Exit;
+   End-If;
+   
+end-method;
+
+method logProcessParms
+   
+   MessageBox(0, "", 0, 0, "******* PROCESS PARAMETERS *******");
+   MessageBox(0, "", 0, 0, "Process Instance    = " | %This.ciProcessInstance);
+   MessageBox(0, "", 0, 0, "OperatorID          = " | %This.csOperatorID);
+   MessageBox(0, "", 0, 0, "Run Control ID      = " | %This.csRunControlID);
+   
+end-method;
+
+method getRunControl
+   /+ &psRunControlRecordName as String +/
+   /* method gets data from Run Control table given in parms
+and assigns it to the crecRunControl record property */
+   
+   Local Record &lrecRunControl;
+   Local string &lsRecName;
+   Local boolean &lbSelectSuccess;
+   
+   rem  MessageBox(0, "", 0, 0, "In getRunControl, RCRecName is *" | &psRunControlRecordName | "*");
+   &lsRecName = "RECORD." | Upper(&psRunControlRecordName);
+   rem  MessageBox(0, "", 0, 0, "lsRecName is *" | &lsRecName | "*");
+   &lrecRunControl = CreateRecord(@(&lsRecName));
+   
+   &lrecRunControl.OPRID.Value = %This.csOperatorID;
+   &lrecRunControl.RUN_CNTL_ID.Value = %This.csRunControlID;
+   
+   &lbSelectSuccess = &lrecRunControl.SelectByKey();
+   
+   If &lbSelectSuccess Then /* if we got it */
+      /* assign resulting record object to crecRunControl property for this object */
+      %This.crecRunControl = &lrecRunControl;
+      
+   Else /* this is a fatal error */
+      MessageBox(0, "", 0, 0, "FATAL ERROR: Unable to select Run Control values");
+      MessageBox(0, "", 0, 0, "OprID = " | &lrecRunControl.OPRID.Value);
+      MessageBox(0, "", 0, 0, "RunCntlID  = " | &lrecRunControl.RUN_CNTL_ID.Value);
+      MessageBox(0, "", 0, 0, ">>> PROCESS STOPPED <<<");
+      Exit;
+   End-If;
+   
+end-method;
+
+/* Begin Mod for DE588 - Changes to Exception Handling */
+/* Move fields from Run Control to Setup table */
+method logRunControl
+   
+   MessageBox(0, "", 0, 0, "******* RUN CONTROL VALUES *******");
+   MessageBox(0, "", 0, 0, "File Path                   = " | %This.crecRunControl.FILE_PATH.Value);
+   /* DE588 - Move Institution and Acad Career to Setup record */
+   MessageBox(0, "", 0, 0, "Extract Date                = " | %This.crecRunControl.UWX_FDX_EXTRACT_DT.Value);
+   /* DE588 - Move Enrollment Lead Time and Expiration Tail Time to Setup record */
+   /* End Mod for DE588 */
+   MessageBox(0, "", 0, 0, "Send Users                  = " | %This.crecRunControl.UWX_FDX_USER_OPT.Value);
+   MessageBox(0, "", 0, 0, "Send Adds and Drops         = " | %This.crecRunControl.UWX_FDX_ENRL_OPT.Value);
+   MessageBox(0, "", 0, 0, "Include Headers             = " | %This.crecRunControl.UWX_HEADER_OPT.Value);
+   MessageBox(0, "", 0, 0, "Send Expirations            = " | %This.crecRunControl.UWX_FDX_EXPIR_OPT.Value);
+   MessageBox(0, "", 0, 0, "Student Org Role            = " | %This.crecRunControl.UWX_FDX_ORGRL_STUD.Value);
+   MessageBox(0, "", 0, 0, "Active Student Role         = " | %This.crecRunControl.UWX_FDX_ACT_ROLE.Value);
+   MessageBox(0, "", 0, 0, "Expired Student Role        = " | %This.crecRunControl.UWX_FDX_EXP_ROLE.Value);
+   MessageBox(0, "", 0, 0, "Course Code for Flex Basics = " | %This.crecRunControl.UWX_FDX_COURSE_CD.Value);
+   MessageBox(0, "", 0, 0, "**********************************");
+end-method;
+
