@@ -3,7 +3,7 @@ UW Extension
 DATE:      August 2014
 DEVELOPER: David Hall
 
-@version 2.1  22 Aug 2016
+@version 2.2  23 Mar 2018
 @author David Hall
 
 Class for UW Extension D2L Extract process.
@@ -21,7 +21,11 @@ Version History
                                 Move values needed for Enrollment Exceptions page to new Setup record (independent of Run Control)
                                 Add methods for getting values from new Setup record 
                                 Revise code to reflect changed records for moved fields
-                                Add method to inactivate exceptions once past end date	
+                                Add method to inactivate exceptions once past end date
+2.2      23 Mar 2018  D Hall    Mods for CDI-79 - Abend for missing course version mapping creates truncated file
+                                Add array for output text, method to add data to array
+                                Revise code to call new method instead of writing to file
+                                Add method to write array to output file, add call to new method	
 */
 
 import UWX_CORE:Utilities:People:*;
@@ -50,6 +54,11 @@ class FlexD2LExtract extends UWX_FLEX_CORE:Extract; /* will be UWX_FLEX_CORE:Ext
    method SetExtractDate();
    method WriteHeader();
    method WriteHeaderLine(&psHeaderText As string);
+   /* Begin Mod for CDI-79 - Abend creates truncated file */
+   /* Add methods for adding to new array for output data, and writing that array out to disk */
+   method AddToOutput(&psOutputText As string);
+   method WriteOutputFile();
+   /* End Mod for CDI-79 */
    method WriteLogHeader();
    /* Begin Mod for DE588 - Changes to Exception Handling */
    /* Add methods to get and log data from setup table */
@@ -78,7 +87,10 @@ class FlexD2LExtract extends UWX_FLEX_CORE:Extract; /* will be UWX_FLEX_CORE:Ext
    property Record crecRunControl;
    /* Class-specific properties follow */
    property date ExtractDate;
-   
+   /* Begin Mod for CDI-79 - Abend creates truncated file */
+   /* Add array to store lines of output */
+   property array of string arrOutputText;
+   /* End Mod for CDI-79 */
    
 end-class;
 
@@ -88,7 +100,12 @@ method FlexD2LExtract
    Local string &sDBName;
    
    %Super = create UWX_FLEX_CORE:Extract();
-   %This.csVersion = "UWX_FLEX_D2L:FlexD2LExtract v2.1 20 Aug 2016 David Hall";
+   %This.csVersion = "UWX_FLEX_D2L:FlexD2LExtract v2.2 23 Mar 2018 David Hall";
+   
+   /* Begin Mod for CDI-79 - Abend creates truncated file */
+   /* instantiate empty array for storing output data */
+   %This.arrOutputText = CreateArrayRept("", 0);
+   /* End Mod for CDI-79 */
    
    /* This should get moved up into UWX_CORE:Process or even UWX_CORE:Base */
    /* get DBName from DB */
@@ -130,7 +147,9 @@ method Main
    /* set delimiter for a CSV */
    %This.FieldDelimiter = ",";
    
-   %This.CreateOutputFile("N", %This.crecRunControl.FILE_PATH.Value, "FLEX_D2LEXT", "csv");
+   /* Begin Mod for CDI-79 - Abend creates truncated file */
+   /* Moved creation of output file to new WriteOutput method */
+   /* End Mod for CDI-79 */
    
    %This.WriteHeader();
    
@@ -150,7 +169,12 @@ method Main
    %This.InactivateEnrollmentExceptions();
    /* End Mod for DE588 */
    
-   %This.CloseOutputFile();
+   /* Begin Mod for CDI-79 - Abend creates truncated file */
+   /* Add call to new method that creates and writes out the output file */
+   %This.WriteOutputFile();
+   
+   /* Also moved close of output file to new WriteOutput method */
+   /* End Mod for CDI-79 */
    
 end-method;
 
@@ -250,8 +274,10 @@ method ExtractEnrollments
          /*put together the line of output data for this enrollment */
          &lsCurrOutputLine = %This.ParseEnrollmentOutput(&lsCurrEmplid, &lsCurrUsername, &lsCurrStrm, &lsCurrClassNbr, &lsCurrStdntEnrlStatus, &lsCurrEnrlStatusReason, &lsCurrSubject, &lsCurrCatalogNbr);
          
-         /* and write it to file */
-         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         /* Begin Mod for CDI-79 - Abend creates truncated file */
+         /* Remove call to WriteLine; replace with call to add output to array for writing to file at end of process */
+         %This.AddToOutput(&lsCurrOutputLine);
+         /* Begin Mod for CDI-79 */
          
       End-While;
       
@@ -321,8 +347,10 @@ method ExtractExpirations
          /* CurrStdntEnrlStatus is hardcoded as EXP, this will tell ParseEnrollmentOutput to treat this as an Expired record */
          &lsCurrOutputLine = %This.ParseEnrollmentOutput(&lsCurrEmplid, &lsCurrUsername, &lsCurrStrm, &lsCurrClassNbr, "EXP", "", &lsCurrSubject, &lsCurrCatalogNbr);
          
-         /* and write it to file */
-         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         /* Begin Mod for CDI-79 - Abend creates truncated file */
+         /* Remove call to WriteLine; replace with call to add output to array for writing to file at end of process */
+         %This.AddToOutput(&lsCurrOutputLine);
+         /* End Mod for CDI-79 */
          
       End-While;
       
@@ -368,12 +396,18 @@ method ExtractUsers
          
          &lsCurrOutputLine = "CREATE" | %This.FieldDelimiter | &loCurrStudent.Username | %This.FieldDelimiter | &loCurrStudent.Emplid | %This.FieldDelimiter | &loCurrStudent.FirstName | %This.FieldDelimiter | &loCurrStudent.LastName | %This.FieldDelimiter | %This.FieldDelimiter | "True" | %This.FieldDelimiter | &loCurrStudent.CampusEmail | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_ORGRL_STUD.Value;
          
-         /* and write it to file */
-         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         /* Begin Mod for CDI-79 - Abend creates truncated file */
+         /* Remove call to WriteLine; replace with call to add output to array for writing to file at end of process */
+         %This.AddToOutput(&lsCurrOutputLine);
+         /* End Mod for CDI-79 */
          
          /* while we're at it, let's make sure they're enrolled in Flex Basics course */
          &lsCurrOutputLine = "ENROLL" | %This.FieldDelimiter | &loCurrStudent.Username | %This.FieldDelimiter | &loCurrStudent.Emplid | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_COURSE_CD.Value | %This.FieldDelimiter | %This.crecRunControl.UWX_FDX_ACT_ROLE.Value;
-         %This.OutputFile.WriteLine(&lsCurrOutputLine);
+         
+         /* Begin Mod for CDI-79 - Abend creates truncated file */
+         /* Remove call to WriteLine; replace with call to add output to array for writing to file at end of process */
+         %This.AddToOutput(&lsCurrOutputLine);
+         /* End Mod for CDI-79 */
          
          /* increment counter */
          &liTotalUserCount = &liTotalUserCount + 1;
@@ -582,10 +616,43 @@ method WriteHeaderLine
    
    /* only write header rec if turned on in RunControl... */
    If %This.crecRunControl.UWX_HEADER_OPT.Value = "Y" Then
-      %This.OutputFile.WriteLine(&psHeaderText);
+      /* Begin Mod for CDI-79 - Abend creates truncated file */
+      /* Remove call to WriteLine; replace with call to add output to array for writing to file at end of process */
+      %This.AddToOutput(&psHeaderText);
+      /* End Mod for CDI-79 */
    End-If;
    
 end-method;
+
+/* Begin Mod for CDI-79 - Abend creates truncated file
+/* Add method for adding to new array for output data */
+method AddToOutput
+   /+ &psOutputText as String +/
+   
+   /* It may seem inefficient to have a separate method for this, but this gives us flexibilty
+for future versions where we may do other things with output */
+   /* add the line of data for output to the array */
+   %This.arrOutputText.Push(&psOutputText);
+   
+end-method;
+
+/* Also add method for writing the array of output text out to disk */
+/* Also move the calls to CreateOutputFile and CloseOutputFile here while we're at it */
+method WriteOutputFile
+   
+   Local integer &i;
+   
+   %This.CreateOutputFile("N", %This.crecRunControl.FILE_PATH.Value, "FLEX_D2LEXT", "csv");
+   
+   For &i = 1 To %This.arrOutputText.Len
+      %This.OutputFile.WriteLine(%This.arrOutputText [&i]);
+   End-For;
+   
+   %This.CloseOutputFile();
+   
+end-method;
+
+/* End Mod for CDI-79 */
 
 method WriteLogHeader
    
